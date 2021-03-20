@@ -1,0 +1,204 @@
+Encoding base64 in Rust
+
+I found base64 encoding in almost all of my professional projects. It is most often used to add binary data in a JSON body or to persist bytes into a database. I never tried to understand how it works and I though it was time to do so.
+
+What is the purpose of base64 encoding ?
+It aims to make binary data displayable. It is a translation from bytes to ASCII string. The name comes from the size of the alphabet: 63 chars + 1 padding char.
+
+There are multiple variants of the base64 encoding (MIME https://www.ietf.org/rfc/rfc2045.txt, Url Safe https://tools.ietf.org/html/rfc4648#section-5).
+
+Here I will implement base64 encoding defined in RFC4648 (https://tools.ietf.org/html/rfc4648#section-4).
+
+How does the encoding works ?
+
+[[image1.png]]
+
+It takes as input a byte array and splits it into chunks of 3 bytes. From these 3 bytes it creates chunks of 6 bits and translates each 6 bits chunk using the base64 alphabet. This operation is repeated for all the bytes chunks.
+
+Of course, your byte input length is not necessarily a multiple of 3. That is why there is a padding char “=”.
+
+If the last bytes chunk has only 2 bytes:
+
+[[image2.png]]
+
+
+The third chunk containing 4 bits is padded with 00. The fourth chunk is translated to the padding char.
+
+If only a single byte remains in the last chunk:
+
+[[image3.png]]
+
+
+The second chunk containing 2 bits is padded with 0000. The third and the fourth chunks are translated to the padding char.
+
+I will not detail the base64 decoding steps in this article because they are exactly the encoding ones reversed.
+
+Rust base64 implementation.
+Rust is a language I am currently learning so there is place for improvement in the following code samples.
+
+Preliminaries:
+I would like to handle hexadecimal string because I found them easier to manipulate than bytes vectors.
+Let us write a test to illustrate the expected behavior:
+
+#[test]
+fn convert_hex_string_to_u8_vec() {
+    let hex_str = "4d";
+    assert_eq!(hex_str_to_u8_vec(hex_str).unwrap(), vec![77]);
+    let hex_str_2 = "4d61";
+    assert_eq!(hex_str_to_u8_vec(hex_str_2).unwrap(), vec![77, 97]);
+}
+hex_str_to_u8_vec will return a Result<Vec<u8>, AppError> where AppError is our homemade error type defined as follow:
+
+pub struct AppError {
+    pub message: String
+}
+The function will return an error in the next two cases:
+
+the input String does not have a multiple of two length.
+if the String is not a correctly formed hexadecimal (e.g. “g4”).
+pub fn hex_str_to_u8_vec(hex_str: &str) -> Result<Vec<u8>, AppError> {
+    if hex_str.len() % 2 != 0 {
+        return Err(AppError { message: "String length must be a multiple of 2".to_string() });
+    }
+
+    let str_byte = hex_str.chars()
+        .collect::<Vec<char>>()
+        .chunks(2)
+        .map(|c| c.iter().collect::<String>())
+        .collect::<Vec<String>>();
+
+    let mut result = Vec::with_capacity(hex_str.len() / 2);
+
+    for b in str_byte {
+        let byte = u8::from_str_radix(b.as_str(), 16)
+            .map_err(|_| AppError { message: format!("Invalid hexadecimal byte format: {}", b) })?;
+        result.push(byte);
+    }
+    Ok(result)
+}
+Firstly we check the length of the input String and immediately return if it is incorrect.
+
+Secondly we transform the input String in chunks of two chars String.
+
+Because we know the result length, we use Vec::with_capacity to create the result vector.
+
+Finally we iterate on the String chunks, try to parse them thanks to the u8::from_str_radix, and add the parsing result to the result vector.
+We can now run the tests to make sure everything is all right.
+
+cargo test
+
+[[image4.png]]
+
+Base64 algorithm:
+First things first, let us write assertions using the function we have just developed:
+
+#[test]
+fn convert_hex_string_to_base64_string() {
+    let hex_0 = "4d616e";
+    let base64_0 = "TWFu";
+    let hex0_bytes = hex_str_to_u8_vec(hex_0).unwrap();
+    assert_eq!(u8_vec_to_base64(hex0_bytes).unwrap(), base64_0);
+
+    let hex_1 = "4d61";
+    let base64_1 = "TWE=";
+    let hex1_bytes = hex_str_to_u8_vec(hex_1).unwrap();
+    assert_eq!(u8_vec_to_base64(hex1_bytes).unwrap(), base64_1);
+
+    let hex_2 = "4d";
+    let base64_2 = "TQ==";
+    let hex2_bytes = hex_str_to_u8_vec(hex_2).unwrap();
+    assert_eq!(u8_vec_to_base64(hex2_bytes).unwrap(), base64_2);
+
+    let hex_3 = "e768a120717569636b2062726f776e20666f78206a756d7073206f766572203133206c617a7920646f67732e";
+    let base64_3 = "52ihIHF1aWNrIGJyb3duIGZveCBqdW1wcyBvdmVyIDEzIGxhenkgZG9ncy4=";
+    let hex3_bytes = hex_str_to_u8_vec(hex_3).unwrap();
+    assert_eq!(u8_vec_to_base64(hex3_bytes).unwrap(), base64_3);
+}
+The function u8_vec_to_base64 takes as input a Vec<u8> and returns a base64 String or an error if the input is malformed.
+
+fn u8_vec_to_base64(vec: Vec<u8>) -> Result<String, AppError>
+We need a function to translate a byte to the base64 char:
+
+fn byte_to_base64(byte: u8) -> Result<char, AppError> {
+    let result = match byte {
+        0 => 'A',
+        1 => 'B',
+        ...
+        62 => '+',
+        63 => '/',
+        _ => return Err(AppError { message: format!("Invalid base64 byte: {}", byte) })
+    };
+    Ok(result)
+}
+We can now implement the algorithm for the different chunk lengths.
+
+Thanks to the rust bitwise operators we create the bit chunks (as described above) and byte_to_base64 to translate the chunk into base64 chars. 
+We use a constant for the padding char:
+
+static BASE64_PADDING: &'static char = &'=';
+We use the following function to validate the input length:
+
+fn validate_array_length(slice: &[u8], expected_len: usize) -> Result<(), AppError> {    if slice.len() != expected_len {        return Err(AppError { message: format!("Invalid array length: Expected {}, got {} ", expected_len, slice.len()) });    }    Ok(())}
+Chunk of length 3:
+
+fn three_bytes_to_base64(bytes: &[u8]) -> Result<String, AppError> {
+    validate_array_length(bytes, 3)?;
+    let char1 = byte_to_base64(&bytes[0] >> 2)?;
+    let char2 = byte_to_base64(((&bytes[0] & 0b00000011) << 4) | (&bytes[1] >> 4))?;
+    let char3 = byte_to_base64(((&bytes[1] & 0b00001111) << 2) | (&bytes[2] >> 6))?;
+    let char4 = byte_to_base64(&bytes[2] & 0b00111111)?;
+    let base64 = format!("{}{}{}{}", char1, char2, char3, char4);
+    Ok(base64)
+}
+Chunk of length 2:
+
+fn two_bytes_to_base64(bytes: &[u8]) -> Result<String, AppError> {
+    validate_array_length(&bytes, 2)?;
+    let char1 = byte_to_base64(&bytes[0] >> 2)?;
+    let char2 = byte_to_base64(((&bytes[0] & 0b00000011) << 4) | (&bytes[1] >> 4))?;
+    let char3 = byte_to_base64((&bytes[1] & 0b00001111) << 2)?;
+    let base64 = format!("{}{}{}{}", char1, char2, char3, BASE64_PADDING);
+    Ok(base64)
+}
+Chunk of length 1:
+
+fn one_byte_to_base64(byte: &u8) -> Result<String, AppError> {
+    let char1 = byte_to_base64(byte >> 2)?;
+    let char2 = byte_to_base64((byte & 0b00000011) << 4)?;
+    let base64 = format!("{}{}{}{}", char1, char2, BASE64_PADDING, BASE64_PADDING);
+    Ok(base64)
+}
+By combining these functions we can handle a full byte array:
+
+fn u8_vec_to_base64(vec: Vec<u8>) -> Result<String, AppError> {
+    let mut accumulator = vec![];
+    let chunks = vec.chunks(3);
+    for c in chunks {
+        if c.len() == 3 {
+            let base64 = three_bytes_to_base64(c)?;
+            accumulator.push(base64);
+        } else if c.len() == 2 {
+            let base64 = two_bytes_to_base64(c)?;
+            accumulator.push(base64);
+        } else if c.len()  == 1 {
+            let base64 = one_byte_to_base64(&c[0])?;
+            accumulator.push(base64);
+        } else {
+            panic!("Impossible");
+        }
+    }
+    Ok(accumulator.concat())
+}
+We start by creating chunks of 3 bytes thanks to the Vec::chunks function.
+Then we iterate on the chunks by checking their length and calling the appropriate function to convert the chunk to a base64 String.
+
+And that is it. We can validate the working behavior by running the tests.
+
+[[image5.png]]
+
+
+All the sources are available here https://github.com/misc-programming/miscp-base64.
+
+I hope you enjoyed this short base64 study.
+
+Thanks !
