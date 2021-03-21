@@ -1,0 +1,315 @@
+How to parse arithmetic expressions in Rust
+
+In this post we will parse arithmetic expressions using a recursive descent parser. The expression may contains operators, digits and parenthesis (e.g. -3 + 4 * 5 – (3 + 2) * (7 – 5) ).
+
+Let us consider that the expression is given as a string. We want to derive an abstract syntactic tree (AST) from this expression and to process this tree to compute the result of the expression.
+
+There are 3 parts in our algorithm:
+
+    Lexer: splits the input string into tokens.
+    Parser: takes as input the list of tokens created by the lexer and generates an AST according to a specific grammar.
+    Interpreter: uses the AST to compute the result of the expression.
+
+1. Lexer
+
+Let us consider that our expressions will contain numbers represented as a single digit. In this step, we iterate through the input string, skipping the spaces and creating a token for each char:
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Token {
+    Digit(u32),
+    Plus,
+    Minus,
+    Times,
+    Division,
+    Lparen,
+    Rparen,
+}
+
+We can have tokens representing numbers, the four mathematics operators and the two parenthesis.
+
+Using the Rust pattern matching we can easily build the list of tokens from the input:
+
+fn lex(input: &str) -> Result<Vec<Token>, String> {
+    let mut tokens = Vec::new();
+
+    for c in input.chars() {
+        match c {
+            d @ '0'..='9' => {
+                let value = d.to_string().parse::<u32>().map_err(|_| format!("{} is not a digit", d))?;
+                tokens.push(Token::Digit(value))
+            }
+            '+' => tokens.push(Token::Plus),
+            '-' => tokens.push(Token::Minus),
+            '*' => tokens.push(Token::Times),
+            '/' => tokens.push(Token::Division),
+            '(' => tokens.push(Token::Lparen),
+            ')' => tokens.push(Token::Rparen),
+            ' ' => continue,
+            _ => return Err(format!("Unexpected char {}", c))
+        }
+    }
+    Ok(tokens)
+}
+
+As usual, it is safer to use test to validate our implementation:
+
+#[test]
+fn test_lexer() {
+    let operation = "-3 + 4 * 5 / 2 - (3 + 2)";
+
+    let expected = vec![Token::Minus, Token::Digit(3), Token::Plus, Token::Digit(4),
+                        Token::Times, Token::Digit(5), Token::Division, Token::Digit(2),
+                        Token::Minus, Token::Lparen, Token::Digit(3), Token::Plus,
+                        Token::Digit(2), Token::Rparen
+    ];
+
+    let tokens = lex(operation).unwrap();
+
+    assert_eq!(tokens, expected);
+}
+
+That is all for our lexer.
+2. Parser
+
+The first thing we need in order to derive the parser implementation is a grammar:
+What is a grammar ?
+
+It is a quadruplet (N, T, R, S) where:
+
+    N: a finite set of non-terminal symbols (we can see them as variables).
+    T: a finite set of terminal symbols which are the literal symbols of our grammar ( in our case 5, (, *, … ).
+    N and T have no elements in common.
+    R: a set of production rules which describe symbols substitutions. We use the Extended Backus–Naur form to describe our production rules.
+    S: a non-terminal which represents the starting point of the grammar.
+
+For each production rules R = (I, O):
+
+    I is non empty and is composed of elements from N or T.
+    O is also composed of elements from N or T. It can be empty.
+
+We will consider a context-free grammar which is a type of grammar where the production rules are (I, O):
+
+    I is a single non-terminal symbol.
+    O contains non-terminal and terminal symbols (and can be empty).
+
+Our grammar for arithmetic expressions is the following:
+
+    Non terminals: E, F, G, H, DIGIT
+    Terminals +, –, *, /, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9
+    Production rules:
+    E = E + F | E – F | F;
+    F = F * G | F / G | G;
+    G = – H | H;
+    H = DIGIT | ( E );
+    DIGIT = “0” | “1” | “2” | “3” | “4” | “5” | “6” | “7” | “8” | “9”;
+    Start symbol: E
+
+With this grammar we can build an AST.
+In our case, the AST is a binary tree describing arithmetics operation.
+
+Say we have : 2 + 3 * 5 .
+The corresponding tree is the following:
+
+[[image1.png]]
+
+Operator precedence:
+If we had E = E + F | E * F, 2 + 3 * 5 could have lead to an incorrect result such as 25 because we would have evaluated the addition before the multiplication.
+
+As you can see, to handle operator precedence (e.g. * over +), we have to set the production rule in a deeper level in the grammar.
+Parser implementation
+
+We use Rust enum to define the recursive type AST:
+
+#[derive(Debug, PartialEq)]
+enum AST {
+    Digit(u32),
+    Sum(Box<AST>, Box<AST>),
+    Diff(Box<AST>, Box<AST>),
+    Prod(Box<AST>, Box<AST>),
+    Div(Box<AST>, Box<AST>),
+    Negative(Box<AST>),
+}
+
+
+We can already write a test to validate the parser’s good working for -3 + 4 * 5 / 2 – (3 + 2) :
+
+[[image2.png]]
+
+#[test]
+fn test_parser() {
+    let operation = "-3 + 4 * 5 / 2 - (3 + 2)";
+
+    let expected =
+        AST::Diff(
+            Box::from(
+                AST::Sum(
+                    Box::from(AST::Negative(Box::from(AST::Digit(3)))),
+                    Box::from(
+                        AST::Div(Box::from(
+                            AST::Prod(
+                                Box::from(AST::Digit(4)),
+                                Box::from(AST::Digit(5)),
+                            )),
+                                 Box::from(AST::Digit(2))),
+                    )),
+            ),
+            Box::from(
+                AST::Sum(
+                    Box::from(AST::Digit(3)),
+                    Box::from(AST::Digit(2)),
+                )
+            ),
+        );
+
+    let tokens = lex(operation).unwrap();
+    let parser = parse(&tokens).unwrap();
+
+    assert_eq!(parser, expected);
+}
+
+The parser is a function that takes the lexer result as an input and returns the AST or an error message:
+
+fn parse(input: &Vec<Token>) -> Result<AST, String> {
+    read_e(input, 0).map(|r| r.0)
+}
+
+Each one of our production rules will be a Rust function: read_e, read_f, read_g and read_h. Each function returns an AST and the position of the last read token, or an error message.
+
+fn read_e(input: &Vec<Token>, position: usize) -> Result<(AST, usize), String> {
+    let mut node_and_position = read_f(input, position)?;
+
+    let operators = vec![Token::Plus, Token::Minus];
+
+    while let Some(current) = input.get(node_and_position.1) {
+        if operators.contains(&current) {
+            node_and_position = match current {
+                Token::Plus => {
+                    let right = read_f(input, node_and_position.1 + 1)?;
+                    (AST::Sum(Box::from(node_and_position.0), Box::from(right.0)), right.1)
+                }
+                Token::Minus => {
+                    let right = read_f(input, node_and_position.1 + 1)?;
+                    (AST::Diff(Box::from(node_and_position.0), Box::from(right.0)), right.1)
+                }
+                _ => return Err("Unexpected operator".to_string())
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(node_and_position)
+}
+
+According to our production rule, an E is at least an F, that is why the first step consists in calling read_f. Then if there is a + or – we call again read_f to get the second operand. As long as there is a + or – we keep calling read_f which handles expressions of the form 2 + 3 + 4. The result is the following AST:
+
+[[image3.png]]
+
+Because of the similarity in the production rules, read_f is very close to read_e but handles different operators:
+
+fn read_f(input: &Vec<Token>, position: usize) -> Result<(AST, usize), String> {
+    let mut node_and_position = read_g(input, position)?;
+
+    let operators = vec![Token::Times, Token::Division];
+
+    while let Some(current) = input.get(node_and_position.1) {
+        if operators.contains(&current) {
+            node_and_position = match current {
+                Token::Times => {
+                    let right = read_h(input, node_and_position.1 + 1)?;
+                    (AST::Prod(Box::from(node_and_position.0), Box::from(right.0)), right.1)
+                }
+                Token::Division => {
+                    let right = read_h(input, node_and_position.1 + 1)?;
+                    (AST::Div(Box::from(node_and_position.0), Box::from(right.0)), right.1)
+                }
+                _ => return Err("Unexpected operator".to_string())
+            }
+        } else {
+            break;
+        }
+    }
+    Ok(node_and_position)
+}
+
+According to the production rules, read_g can start with a – symbol and if so we have a negative part to read.
+
+fn read_g(input: &Vec<Token>, position: usize) -> Result<(AST, usize), String> {
+    let operators = vec![Token::Minus];
+
+    let token = read_token(input, position)?;
+
+    if operators.contains(&token) {
+        let node = read_h(input, position + 1)?;
+        Ok((AST::Negative(Box::from(node.0)), node.1))
+    } else {
+        read_h(input, position)
+    }
+}
+
+I added the utility function read_token, which makes the reading cleaner in the read_X functions thanks to the ? rust operator:
+
+fn read_token(input: &Vec<Token>, position: usize) -> Result<&Token, String> {    match input.get(position) {        None => Err(format!("Cannot read token at position {}", position)),        Some(token) => Ok(token)    }}
+
+The last of our production rules contains a DIGIT, or an E between parenthesis:
+
+fn read_h(input: &Vec<Token>, position: usize) -> Result<(AST, usize), String> {
+    let token = read_token(input, position)?;
+    match token {
+        Token::Digit(value) => {
+            Ok((AST::Digit(*value), position + 1))
+        }
+        Token::Lparen => {
+            let node_and_position = read_e(input, position + 1)?;
+            let rparen = read_token(input, node_and_position.1)?;
+            match rparen {
+                Token::Rparen => Ok((node_and_position.0, node_and_position.1 + 1)),
+                _ => return Err("Missing left parenthesis".to_string())
+            }
+        }
+        _ => return Err(format!("Unexpected token at position {}", position))
+    }
+}
+
+Run the test and that is it, the harder part is done.
+3. Interpreter
+
+The interpreter is pretty straightforward to implement.
+
+We expect the following behaviour:
+
+#[test]
+fn test_interpreter() {
+    let operation = "-3 + 4 * 5 - (3 + 2) * ( 7 - 5 )";
+    assert_eq!(interpret(operation).unwrap(), 7);
+}
+
+The interpret function takes the operation string as input, calls the lexer, then the parser and finally processes each node of the AST and computes the operation result.
+
+fn interpret(operation: &str) -> Result<i32, String> {
+    let tokens = lex(operation)?;
+    let parser = parse(&tokens)?;
+    Ok(parser.value())
+}
+
+We add a method on the AST type which will handle the computation of our arithmetic operation.
+
+impl AST {
+    fn value(self) -> i32 {
+        match self {
+            AST::Digit(d) => d as i32,
+            AST::Sum(l, r) => l.value() + r.value(),
+            AST::Diff(l, r) => l.value() - r.value(),
+            AST::Prod(l, r) => l.value() * r.value(),
+            AST::Div(l, r) => l.value() / r.value(),
+            AST::Neg(d) => -d.value()
+        }
+    }
+}
+
+Everything works fine !
+
+I hope this post makes a good introduction to the parser world as there is of course a lot more to know.
+
+The sources are available here https://github.com/misc-programming/miscp-parser.
+
+Thanks !
