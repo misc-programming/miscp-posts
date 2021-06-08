@@ -1,0 +1,260 @@
+Write a PDF by hand
+
+In this post we create a PDF using only a text editor.
+
+Because a PDF content can be quite rich our file will only be composed with a single page displaying a few words.
+
+We use the PDF specification, mainly section 7.5 (file structure) and 7.7 (document structure).
+Table of contents
+
+    Objects
+    File structure
+    Document structure
+    Example
+
+Objects
+
+First let us see the objects we will use.
+
+    Numbers. We will use basic integers and floats number (e.g. 1, 45.6).
+    Strings. They are composed of two parenthesis with text inside (e.g. (Hello, World!) ).
+    Arrays. They are represented as a list of items separated with a space symbol, the whole between brackets (e.g. [(test) 34 5.1] ).
+    Name objects. They are unique identifier, starting with a slash symbol (e.g. /Type, /Content).
+    Dictionnaries. They are associative tables:
+    <<
+    /Type /Font
+    /Subtype /Type1
+    /BaseFont /Courrier
+    >>
+    Here /Type is associated with /Font, /Subtype with /Type1 …
+    Stream. It is similar to the strings but it can contain binary data.
+    Indirect objects. They are object we can reference thanks to an identifier:
+    1 0 obj
+    <<
+    /Type /Catalog
+    /Page 2 0 R
+    >>
+    endobj
+    Here this object can be later reference as 1 0 R (the 1 being the object identifier, and the 0 the generation number which is used to follow object updates).
+    /Page 2 0 R associates the Name object /Page with the object 2 0 (the R indicates an object reference).
+
+We can also add comments in our file thanks to the % followed by the comment text we want until the end of the line.
+File structure
+
+There are 4 parts in a PDF:
+
+    The header which indicated the PDF version (from 1.0 to 1.7) and followed by at least 4 characters with an ascii code greater than 128. This is the header of our file:
+
+%PDF-1.7
+%âãÏÓ
+
+    The body which contains everything needed to the display of our page (strings, fonts, pages description).
+    The cross reference table which references every indirect object starting byte offset in the file. It makes it easy to jump from an object to another without parsing the entire document.
+    It starts with the xref followed by the item number in the table (here 6). Each entry is composed of the byte offset of the object, its generation number and f (if the object is free) or n (if the object is in use).
+    According to the specification, the first entry in the cross reference table is always free and with a generation number of 65535. The object 1 can be found at the offset 19 in the following example.
+
+xref
+0 6
+0000000000 65535 f
+0000000019 00000 n
+0000000068 00000 n
+0000000126 00000 n
+0000000323 00000 n
+0000000232 00000 n
+
+    The file trailer first indicates the number of indirect object in the file (plus 1 because of the special cross reference table first entry) and the document root (which will be discuss in the next section). Then it points the byte offset of the cross reference table followed by %%EOF indicating the end of the file.
+
+trailer
+<<
+/Size 6
+/Root 1 0 R
+>>
+startxref
+444
+%%EOF
+
+To read a PDF document a program starts by the end of the file looking for the cross reference table offset and the document root object. Then it processes the file jumping from one object to another.
+Document structure
+
+The structure of the PDF body is a tree where the root is called the Document Catalog. The following tree describes the simple document we will write:
+
+[[image1.pdf]]
+
+Our body is composed of 5 object:
+
+    The document catalog. The root of the document used to reference the pages definitions and other things we would not details in the article.
+    The pages definitions which references the page definition for each page in the document.
+    The page 1 definition which is the only in our document.
+    The resources of the page 1 which only contains the font we want to use in our case.
+    The page 1 content which contains the string “First handmade PDF!”.
+
+As we will see there is no obligation to respect a particular order in the object definition in the file.
+Example
+
+From what we said before we start with the following file:
+
+%PDF-1.7
+%âãÏÓ
+
+% body
+
+xref
+0 6
+0000000000 65535 f
+0000000000 00000 n
+0000000000 00000 n
+0000000000 00000 n
+0000000000 00000 n
+0000000000 00000 n
+trailer
+<<
+/Size 6
+/Root 1 0 R
+>
+startxref
+0
+%%EOF
+
+We will set the bytes offset when we will be done writing all the objects. To get the byte offset of an object in the file we can use “g, g + ctrl” with Vim.
+
+Document catalog:
+
+1 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+
+Following the specification, the document catalog needs to have at least an attribute /Type set to /Catalog and another attribute /Pages referencing the object page definitions.
+
+Page definitions:
+
+2 0 obj
+<<
+/Type /Pages
+/Kids [3 0 R]
+/Count 1
+>>
+
+It contains the page count and the references to each page definition.
+
+Page 1 definition:
+
+<<
+/Type /Page
+/Parent 2 0 R
+/Resources 5 0 R
+/MediaBox [0 0 595 842]
+/Contents [4 0 R]
+>>
+
+It has the following attributes:
+
+    A reference to its parent.
+    A reference to the page resources.
+    An array representing the page dimension (here we use the A4 format).
+    A reference to the page content.
+
+Resources:
+
+5 0 obj
+<<
+/Font
+<<
+/F0
+<<
+/Type /Font
+/Subtype /Type1
+/BaseFont /Courrier
+>>
+>>
+>>
+
+The resources contains a dictionary where we define the font we want to use. We associate an identifier (here /F0) to each font definition. PDF support a base of 14 fonts we can easily use (there are a many more attributes if we would want to use another font).
+
+Page content:
+
+4 0 obj
+<<
+/Length 66
+>>
+stream
+1. 0. 0. 1. 50. 700. cm
+BT
+/F0 36. Tf
+(First handmade PDF!) Tj
+ET
+endstream
+endobj
+
+This part is the harder to understand.
+It starts with the stream length followed by the stream content.
+1. 0. 0. 1. 50. 700. cm indicates the cursor position and direction.
+The PDF standard has many function to render text. Here we use the Tf function to select the font and the size of the rendered text (/F0 references the font Courier as we set it previously in the Resource indirect object definition)
+Then we use theTj function to insert the string we want. The whole is inside a block starting with BT (Beginning Text) and ending with ET (End Text).
+
+Put everything together, manually set the byte offsets and that is it !
+
+%PDF-1.7
+%âãÏÓ
+1 0 obj
+<<
+/Type /Catalog
+/Pages 2 0 R
+>>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R]  /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources 5 0 R /MediaBox [0 0 595 842] /Contents [4 0 R] >>
+endobj
+5 0 obj
+<< /Font << /F0 << /Type /Font /Subtype /Type1 /BaseFont /Courrier >>
+>>
+>>
+endobj
+4 0 obj
+<< /Length 66  >>
+stream
+0. 0. 1. 50. 700. cm
+BT
+/F0 36. Tf
+(First handmade PDF!) Tj
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f
+0000000019 00000 n
+0000000068 00000 n
+0000000126 00000 n
+0000000323 00000 n
+0000000232 00000 n
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+439
+%%EOF
+
+We can check that the PDF can properly be displayed.
+our pdf displayed
+
+Even if our PDF is displayed correctly, keep in mind that all the PDF readers have error tolerance. We can check that everything is valid with qpdf:
+
+qpdf --check test.pdf
+checking test.pdf
+PDF Version: 1.7
+File is not encrypted
+File is not linearized
+No syntax or stream encoding errors found; the file may still contain
+errors that qpdf cannot detect
+
+If we did not wanted to fill by hand the byte offsets and the stream size we could have set the value to 0 and used pdftk.
+
+pdftk test.pdf output test-corrected.pdf
+
+I hope this article made it a good introduction on what is inside a PDF.
+
+Thanks !
